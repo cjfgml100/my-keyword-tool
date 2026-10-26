@@ -27,49 +27,50 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 블로그 최근 1개월 발행량 수집 (모바일 검색 실제 패킷 추출) ---
+# --- 3. 블로그 1개월 발행량 수집 (클라우드 IP 차단 우회 프록시) ---
 def get_naver_blog_count(keyword):
     encoded_kw = urllib.parse.quote(keyword)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 NAVER(inapp; search; 1000; 12.0.0)",
-        "Referer": "https://m.search.naver.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9"
-    }
-
-    # 1) 모바일 블로그 탭 최근 1개월(1m) 쿼리
-    url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
+    target_url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
+    
+    # 해외 클라우드 IP 차단을 뚫기 위해 프록시 우회 경유
+    proxy_url = f"https://api.allorigins.win/get?url={urllib.parse.quote(target_url)}"
+    
     try:
-        res = requests.get(url, headers=headers, timeout=5)
-        text = res.text
-
-        # 텍스트 내 총 건수 추출 정규표현식
-        patterns = [
-            r'class="[^"]*title_num[^"]*"[^>]*>[\s\S]*?/\s*([0-9,]+)건',
-            r'/\s*([0-9,]+)건',
-            r'class="sub_pack[^"]*"[\s\S]*?([0-9,]+)건',
-            r'전체\s*<[^>]+>\s*([0-9,]+)\s*건',
-            r'([0-9,]+)건\s*</span>',
-            r'"totalCount":\s*([0-9]+)'
-        ]
-        for p in patterns:
-            m = re.search(p, text)
+        res = requests.get(proxy_url, timeout=8)
+        if res.status_code == 200:
+            text = res.json().get('contents', '')
+            patterns = [
+                r'class="[^"]*title_num[^"]*"[^>]*>[\s\S]*?/\s*([0-9,]+)건',
+                r'/\s*([0-9,]+)건',
+                r'class="sub_pack[^"]*"[\s\S]*?([0-9,]+)건',
+                r'전체\s*<[^>]+>\s*([0-9,]+)\s*건',
+                r'([0-9,]+)건\s*</span>',
+                r'"totalCount":\s*([0-9]+)'
+            ]
+            for p in patterns:
+                m = re.search(p, text)
+                if m:
+                    val = m.group(1).replace(',', '')
+                    if val.isdigit() and int(val) > 0:
+                        return int(val)
+    except:
+        pass
+        
+    # 직접 시도 (백업)
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+        }
+        res_direct = requests.get(target_url, headers=headers, timeout=4)
+        for p in [r'/\s*([0-9,]+)건', r'([0-9,]+)건\s*</span>']:
+            m = re.search(p, res_direct.text)
             if m:
                 val = m.group(1).replace(',', '')
-                if val.isdigit() and int(val) > 0:
-                    return int(val)
-
-        # 2) 스마트블록(VIEW) 검색 백업
-        url_view = f"https://m.search.naver.com/search.naver?where=m_view&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
-        res_view = requests.get(url_view, headers=headers, timeout=5)
-        for p in patterns:
-            m = re.search(p, res_view.text)
-            if m:
-                val = m.group(1).replace(',', '')
-                if val.isdigit() and int(val) > 0:
+                if val.isdigit():
                     return int(val)
     except:
         pass
+
     return 0
 
 # --- 4. 블릿AI 공식 등급 판정 로직 ---
@@ -125,7 +126,7 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
             }
             params = {"hintKeywords": query.replace(" ", ""), "showDetail": 1}
             ad_res = requests.get(base_url + uri, params=params, headers=headers).json()
-            keywords_data = ad_res.get('keywordList', [])[:25]
+            keywords_data = ad_res.get('keywordList', [])[:20]
 
             result_list = []
             total_items = len(keywords_data)
@@ -148,7 +149,6 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
                     "월 발행량": monthly_pub,
                 })
                 progress_bar.progress((idx + 1) / total_items)
-                time.sleep(0.12)
 
             progress_text.empty()
             progress_bar.empty()
