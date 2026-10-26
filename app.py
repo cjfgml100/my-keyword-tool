@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
 import requests
-from bs4 import BeautifulSoup
 import time
 import hmac
 import hashlib
 import base64
 import urllib.parse
-import re
+import json
 
 # --- 1. 페이지 기본 설정 ---
 st.set_page_config(page_title="나만의 키워드 채굴기", page_icon="⛏️", layout="wide")
@@ -15,10 +14,6 @@ st.set_page_config(page_title="나만의 키워드 채굴기", page_icon="⛏️
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #ffffff; }
-    .grade-s { background-color: #059669; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-    .grade-a { background-color: #2563eb; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-    .grade-b { background-color: #d97706; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-    .grade-f { background-color: #dc2626; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -28,36 +23,55 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 블로그 월간 발행량 수집 (모바일/PC 통합 정밀 추출) ---
+# --- 3. 블로그 최근 1개월 발행량 정밀 수집 ---
 def get_naver_blog_count(keyword):
+    # 모바일 통합 검색의 내부 통계 API 직접 호출 (IP 차단 회피용 헤더 세팅)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+        "Referer": "https://m.search.naver.com/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9"
+    }
+    encoded_kw = urllib.parse.quote(keyword)
+    
+    # 1순위: VIEW/블로그 탭 모바일 1개월 필터 주소
+    url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
     try:
-        encoded_kw = urllib.parse.quote(keyword)
-        # 네이버 모바일 뷰/블로그 탭 (최근 1개월 조건)
-        url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
-        }
         res = requests.get(url, headers=headers, timeout=5)
         text = res.text
         
-        # 1) 본문 전체에서 건수 패턴 정규식 매칭 (가장 확실함)
-        match = re.search(r'([0-9,]+)건\s*</span>', text) or re.search(r'/\s*([0-9,]+)건', text) or re.search(r'전체\s*([0-9,]+)건', text)
-        if match:
-            return int(match.group(1).replace(',', ''))
-        
-        # 2) PC 버전 URL 재시도
+        # total_cnt 또는 숫자 패턴 정밀 추출
+        import re
+        patterns = [
+            r'totalCnt["\']?\s*:\s*["\']?([0-9,]+)',
+            r'class="[^"]*title_num[^"]*"[^>]*>[^<]*?([0-9,]+)\s*건',
+            r'전체\s*<[^>]+>\s*([0-9,]+)\s*건',
+            r'([0-9,]+)건\s*</span>',
+            r'/\s*([0-9,]+)건'
+        ]
+        for p in patterns:
+            m = re.search(p, text)
+            if m:
+                cnt_str = m.group(1).replace(',', '')
+                if cnt_str.isdigit():
+                    return int(cnt_str)
+                    
+        # 2순위: PC 블로그 검색 1개월 옵션
         pc_url = f"https://search.naver.com/search.naver?where=blog&query={encoded_kw}&sm=tab_opt&nso=so:r,p:1m"
-        pc_res = requests.get(pc_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=5)
-        soup = BeautifulSoup(pc_res.text, 'html.parser')
-        
-        cnt_elem = soup.select_one('.title_num') or soup.select_one('.sub_pack .title_num') or soup.select_one('.total_cnt')
-        if cnt_elem:
-            pc_match = re.search(r'([0-9,]+)건', cnt_elem.get_text())
-            if pc_match:
-                return int(pc_match.group(1).replace(',', ''))
-        return 0
+        pc_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Referer": "https://search.naver.com/"
+        }
+        res_pc = requests.get(pc_url, headers=pc_headers, timeout=5)
+        for p in patterns:
+            m = re.search(p, res_pc.text)
+            if m:
+                cnt_str = m.group(1).replace(',', '')
+                if cnt_str.isdigit():
+                    return int(cnt_str)
     except:
-        return 0
+        pass
+    return 0
 
 # --- 4. 블릿AI 공식 등급 판정 로직 ---
 def calculate_grade(search_vol, blog_cnt):
@@ -78,9 +92,9 @@ def calculate_grade(search_vol, blog_cnt):
     else:
         return "S" if blog_cnt <= 200 else ("A" if blog_cnt <= 350 else ("B" if blog_cnt <= 600 else "F"))
 
-# --- 5. 화면 구성 ---
+# --- 5. UI 및 로직 실행 ---
 st.title("⛏️ 나만의 키워드 채굴기")
-st.caption("네이버 검색량과 실시간 월 발행량을 분석하여 S(황금)부터 F까지 등급을 판정합니다.")
+st.caption("네이버 검색량과 실시간 최근 1개월 블로그 발행량을 분석하여 S(황금)부터 F까지 등급을 판정합니다.")
 
 with st.sidebar:
     st.header("🔑 네이버 검색광고 API 키")
@@ -88,7 +102,7 @@ with st.sidebar:
     api_key = st.text_input("API KEY (액세스라이선스)", type="password")
     secret_key = st.text_input("SECRET KEY (비밀키)", type="password")
 
-query = st.text_input("분석할 대표 키워드를 입력하세요", placeholder="예: 부천맛집, 신중동역맛집, 치약")
+query = st.text_input("분석할 대표 키워드를 입력하세요", placeholder="예: 노브랜드몰, 부천맛집")
 
 if st.button("🚀 키워드 채굴 시작", use_container_width=True):
     if not (customer_id and api_key and secret_key):
@@ -135,7 +149,7 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
                     "월 발행량": monthly_pub,
                 })
                 progress_bar.progress((idx + 1) / total_items)
-                time.sleep(0.15)
+                time.sleep(0.2)
 
             progress_text.empty()
             progress_bar.empty()
