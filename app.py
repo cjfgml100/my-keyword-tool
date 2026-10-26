@@ -6,7 +6,6 @@ import hmac
 import hashlib
 import base64
 import urllib.parse
-import json
 import re
 
 # --- 1. 페이지 기본 설정 ---
@@ -15,6 +14,10 @@ st.set_page_config(page_title="나만의 키워드 채굴기", page_icon="⛏️
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #ffffff; }
+    .grade-s { background-color: #059669; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+    .grade-a { background-color: #2563eb; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+    .grade-b { background-color: #d97706; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
+    .grade-f { background-color: #dc2626; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -24,29 +27,30 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 블로그 최근 1개월 발행량 수집 (네이버 모바일 내부 API 직접 타격) ---
+# --- 3. 블로그 최근 1개월 발행량 수집 (모바일 검색 실제 패킷 추출) ---
 def get_naver_blog_count(keyword):
     encoded_kw = urllib.parse.quote(keyword)
     headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-        "Referer": f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}",
-        "Accept": "*/*"
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 NAVER(inapp; search; 1000; 12.0.0)",
+        "Referer": "https://m.search.naver.com/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ko-KR,ko;q=0.9"
     }
 
-    # 1) 모바일 블로그 검색 결과 직접 조회 (최근 1개월 nso 옵션)
+    # 1) 모바일 블로그 탭 최근 1개월(1m) 쿼리
     url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
     try:
         res = requests.get(url, headers=headers, timeout=5)
         text = res.text
 
-        # HTML 내 텍스트 매칭
+        # 텍스트 내 총 건수 추출 정규표현식
         patterns = [
+            r'class="[^"]*title_num[^"]*"[^>]*>[\s\S]*?/\s*([0-9,]+)건',
+            r'/\s*([0-9,]+)건',
             r'class="sub_pack[^"]*"[\s\S]*?([0-9,]+)건',
             r'전체\s*<[^>]+>\s*([0-9,]+)\s*건',
-            r'/\s*([0-9,]+)건',
             r'([0-9,]+)건\s*</span>',
-            r'"totalCount":\s*([0-9]+)',
-            r'"total":\s*([0-9]+)'
+            r'"totalCount":\s*([0-9]+)'
         ]
         for p in patterns:
             m = re.search(p, text)
@@ -55,15 +59,11 @@ def get_naver_blog_count(keyword):
                 if val.isdigit() and int(val) > 0:
                     return int(val)
 
-        # 2) PC 스마트블록/블로그 섹션 백업 요청
-        pc_url = f"https://search.naver.com/search.naver?ssc=tab.blog.all&where=blog&query={encoded_kw}&sm=tab_opt&nso=so:r,p:1m"
-        pc_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Referer": "https://search.naver.com/"
-        }
-        res_pc = requests.get(pc_url, headers=pc_headers, timeout=5)
+        # 2) 스마트블록(VIEW) 검색 백업
+        url_view = f"https://m.search.naver.com/search.naver?where=m_view&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
+        res_view = requests.get(url_view, headers=headers, timeout=5)
         for p in patterns:
-            m = re.search(p, res_pc.text)
+            m = re.search(p, res_view.text)
             if m:
                 val = m.group(1).replace(',', '')
                 if val.isdigit() and int(val) > 0:
@@ -93,7 +93,7 @@ def calculate_grade(search_vol, blog_cnt):
 
 # --- 5. UI 화면 ---
 st.title("⛏️ 나만의 키워드 채굴기")
-st.caption("네이버 검색량과 실시간 최근 1개월 블로그 발행량을 분석하여 등급(S~F)을 판정합니다.")
+st.caption("네이버 검색량과 실시간 최근 1개월 블로그 발행량을 분석하여 S부터 F까지 등급을 판정합니다.")
 
 with st.sidebar:
     st.header("🔑 네이버 검색광고 API 키")
@@ -148,7 +148,7 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
                     "월 발행량": monthly_pub,
                 })
                 progress_bar.progress((idx + 1) / total_items)
-                time.sleep(0.15)
+                time.sleep(0.12)
 
             progress_text.empty()
             progress_bar.empty()
