@@ -89,13 +89,20 @@ def get_search_volumes(keyword):
 # 3. 블로그 최근 1개월 발행량
 #    (키/주소는 Secrets로 바꿀 수 있게 해둠: API HUB 대응용)
 # ------------------------------------------------------------------
-@st.cache_data(ttl=3600, show_spinner=False)
 def get_blog_count(keyword):
-    """반환: (발행량 또는 None, 오류 메시지 또는 None)"""
+    """반환: (발행량 또는 None, 오류 메시지 또는 None). 실패는 캐시하지 않는다."""
+    try:
+        return _fetch_blog_count(keyword), None
+    except Exception as e:
+        return None, str(e)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_blog_count(keyword):
     cid = st.secrets.get("NAVER_CLIENT_ID")
     csec = st.secrets.get("NAVER_CLIENT_SECRET")
     if not cid or not csec:
-        return None, "블로그 API 키가 설정되지 않음"
+        raise RuntimeError("블로그 API 키가 설정되지 않음")
 
     url = st.secrets.get("BLOG_API_URL", "https://openapi.naver.com/v1/search/blog.json")
     id_header = st.secrets.get("BLOG_ID_HEADER", "X-Naver-Client-Id")
@@ -112,7 +119,7 @@ def get_blog_count(keyword):
             timeout=10,
         )
         if r.status_code != 200:
-            return None, f"{r.status_code}: {r.text[:120]}"
+            raise RuntimeError(f"{r.status_code}: {r.text[:120]}")
         items = r.json().get("items", [])
         if not items:
             break
@@ -126,7 +133,7 @@ def get_blog_count(keyword):
         if recent < len(items) or len(items) < 100:
             break
         time.sleep(0.1)
-    return count, None
+    return count
 
 
 # ------------------------------------------------------------------
