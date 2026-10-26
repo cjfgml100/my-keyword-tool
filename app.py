@@ -28,23 +28,33 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 블로그 월간 발행량 수집 (개발자센터 키 불필요) ---
+# --- 3. 블로그 월간 발행량 수집 (모바일/PC 통합 정밀 추출) ---
 def get_naver_blog_count(keyword):
     try:
         encoded_kw = urllib.parse.quote(keyword)
-        url = f"https://search.naver.com/search.naver?where=blog&query={encoded_kw}&sm=tab_opt&nso=so:r,p:1m"
+        # 네이버 모바일 뷰/블로그 탭 (최근 1개월 조건)
+        url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
         }
         res = requests.get(url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
+        text = res.text
         
-        title_num = soup.select_one('.sub_pack .title_num') or soup.select_one('.total_cnt')
-        if title_num:
-            text = title_num.get_text()
-            match = re.search(r'/\s*([0-9,]+)건', text)
-            if match:
-                return int(match.group(1).replace(',', ''))
+        # 1) 본문 전체에서 건수 패턴 정규식 매칭 (가장 확실함)
+        match = re.search(r'([0-9,]+)건\s*</span>', text) or re.search(r'/\s*([0-9,]+)건', text) or re.search(r'전체\s*([0-9,]+)건', text)
+        if match:
+            return int(match.group(1).replace(',', ''))
+        
+        # 2) PC 버전 URL 재시도
+        pc_url = f"https://search.naver.com/search.naver?where=blog&query={encoded_kw}&sm=tab_opt&nso=so:r,p:1m"
+        pc_res = requests.get(pc_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}, timeout=5)
+        soup = BeautifulSoup(pc_res.text, 'html.parser')
+        
+        cnt_elem = soup.select_one('.title_num') or soup.select_one('.sub_pack .title_num') or soup.select_one('.total_cnt')
+        if cnt_elem:
+            pc_match = re.search(r'([0-9,]+)건', cnt_elem.get_text())
+            if pc_match:
+                return int(pc_match.group(1).replace(',', ''))
         return 0
     except:
         return 0
@@ -74,12 +84,11 @@ st.caption("네이버 검색량과 실시간 월 발행량을 분석하여 S(황
 
 with st.sidebar:
     st.header("🔑 네이버 검색광고 API 키")
-    st.info("메모장에 적어둔 검색광고 키 3개를 입력하세요.")
     customer_id = st.text_input("CUSTOMER ID", type="password")
     api_key = st.text_input("API KEY (액세스라이선스)", type="password")
     secret_key = st.text_input("SECRET KEY (비밀키)", type="password")
 
-query = st.text_input("분석할 대표 키워드를 입력하세요", placeholder="예: 스타벅스, 치약, 신중동맛집")
+query = st.text_input("분석할 대표 키워드를 입력하세요", placeholder="예: 부천맛집, 신중동역맛집, 치약")
 
 if st.button("🚀 키워드 채굴 시작", use_container_width=True):
     if not (customer_id and api_key and secret_key):
@@ -126,7 +135,7 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
                     "월 발행량": monthly_pub,
                 })
                 progress_bar.progress((idx + 1) / total_items)
-                time.sleep(0.1)
+                time.sleep(0.15)
 
             progress_text.empty()
             progress_bar.empty()
