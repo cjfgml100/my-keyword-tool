@@ -7,6 +7,7 @@ import hashlib
 import base64
 import urllib.parse
 import json
+import re
 
 # --- 1. 페이지 기본 설정 ---
 st.set_page_config(page_title="나만의 키워드 채굴기", page_icon="⛏️", layout="wide")
@@ -23,41 +24,39 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 블로그 최근 1개월 발행량 정밀 수집 ---
+# --- 3. 블로그 최근 1개월 발행량 수집 (네이버 모바일 내부 API 직접 타격) ---
 def get_naver_blog_count(keyword):
-    # 모바일 통합 검색의 내부 통계 API 직접 호출 (IP 차단 회피용 헤더 세팅)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-        "Referer": "https://m.search.naver.com/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ko-KR,ko;q=0.9"
-    }
     encoded_kw = urllib.parse.quote(keyword)
-    
-    # 1순위: VIEW/블로그 탭 모바일 1개월 필터 주소
+    headers = {
+        "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+        "Referer": f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}",
+        "Accept": "*/*"
+    }
+
+    # 1) 모바일 블로그 검색 결과 직접 조회 (최근 1개월 nso 옵션)
     url = f"https://m.search.naver.com/search.naver?where=m_blog&query={encoded_kw}&sm=mtb_opt&nso=so:r,p:1m"
     try:
         res = requests.get(url, headers=headers, timeout=5)
         text = res.text
-        
-        # total_cnt 또는 숫자 패턴 정밀 추출
-        import re
+
+        # HTML 내 텍스트 매칭
         patterns = [
-            r'totalCnt["\']?\s*:\s*["\']?([0-9,]+)',
-            r'class="[^"]*title_num[^"]*"[^>]*>[^<]*?([0-9,]+)\s*건',
+            r'class="sub_pack[^"]*"[\s\S]*?([0-9,]+)건',
             r'전체\s*<[^>]+>\s*([0-9,]+)\s*건',
+            r'/\s*([0-9,]+)건',
             r'([0-9,]+)건\s*</span>',
-            r'/\s*([0-9,]+)건'
+            r'"totalCount":\s*([0-9]+)',
+            r'"total":\s*([0-9]+)'
         ]
         for p in patterns:
             m = re.search(p, text)
             if m:
-                cnt_str = m.group(1).replace(',', '')
-                if cnt_str.isdigit():
-                    return int(cnt_str)
-                    
-        # 2순위: PC 블로그 검색 1개월 옵션
-        pc_url = f"https://search.naver.com/search.naver?where=blog&query={encoded_kw}&sm=tab_opt&nso=so:r,p:1m"
+                val = m.group(1).replace(',', '')
+                if val.isdigit() and int(val) > 0:
+                    return int(val)
+
+        # 2) PC 스마트블록/블로그 섹션 백업 요청
+        pc_url = f"https://search.naver.com/search.naver?ssc=tab.blog.all&where=blog&query={encoded_kw}&sm=tab_opt&nso=so:r,p:1m"
         pc_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Referer": "https://search.naver.com/"
@@ -66,9 +65,9 @@ def get_naver_blog_count(keyword):
         for p in patterns:
             m = re.search(p, res_pc.text)
             if m:
-                cnt_str = m.group(1).replace(',', '')
-                if cnt_str.isdigit():
-                    return int(cnt_str)
+                val = m.group(1).replace(',', '')
+                if val.isdigit() and int(val) > 0:
+                    return int(val)
     except:
         pass
     return 0
@@ -92,9 +91,9 @@ def calculate_grade(search_vol, blog_cnt):
     else:
         return "S" if blog_cnt <= 200 else ("A" if blog_cnt <= 350 else ("B" if blog_cnt <= 600 else "F"))
 
-# --- 5. UI 및 로직 실행 ---
+# --- 5. UI 화면 ---
 st.title("⛏️ 나만의 키워드 채굴기")
-st.caption("네이버 검색량과 실시간 최근 1개월 블로그 발행량을 분석하여 S(황금)부터 F까지 등급을 판정합니다.")
+st.caption("네이버 검색량과 실시간 최근 1개월 블로그 발행량을 분석하여 등급(S~F)을 판정합니다.")
 
 with st.sidebar:
     st.header("🔑 네이버 검색광고 API 키")
@@ -120,8 +119,8 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
             sig = generate_signature(timestamp, "GET", uri, secret_key)
             headers = {
                 "X-Timestamp": timestamp,
-                "X-API-KEY": api_key,
-                "X-Customer": str(customer_id),
+                "X-API-KEY": api_key.strip(),
+                "X-Customer": str(customer_id).strip(),
                 "X-Signature": sig
             }
             params = {"hintKeywords": query.replace(" ", ""), "showDetail": 1}
@@ -149,7 +148,7 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
                     "월 발행량": monthly_pub,
                 })
                 progress_bar.progress((idx + 1) / total_items)
-                time.sleep(0.2)
+                time.sleep(0.15)
 
             progress_text.empty()
             progress_bar.empty()
