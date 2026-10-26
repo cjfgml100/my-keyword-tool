@@ -27,11 +27,10 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 네이버 공식 검색 API (최근 1개월 발행량 정밀 계산) ---
+# --- 3. 최근 1개월 블로그 발행량 조회 ---
 def get_recent_monthly_blog_count(keyword, client_id, client_secret):
     try:
         encoded_kw = urllib.parse.quote(keyword)
-        # sim(정확도순) 대신 date(최신순) 정렬로 100건을 가져와 최근 30일 내 작성된 글 수 계산
         url = f"https://openapi.naver.com/v1/search/blog.json?query={encoded_kw}&display=100&sort=date"
         headers = {
             "X-Naver-Client-Id": client_id.strip(),
@@ -41,20 +40,35 @@ def get_recent_monthly_blog_count(keyword, client_id, client_secret):
         if res.status_code == 200:
             data = res.json()
             items = data.get('items', [])
+            total_docs = data.get('total', 0)
+            
             if not items:
                 return 0
             
-            # 최근 30일 기준일자
-            one_month_ago = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
+            # 기준일: 최근 30일 계산
+            cutoff_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
             
             recent_count = 0
+            oldest_item_date = items[-1].get('postdate', '')
+            
             for item in items:
-                postdate = item.get('postdate', '')
-                if postdate >= one_month_ago:
+                pdate = str(item.get('postdate', '')).strip()
+                if pdate >= cutoff_date:
                     recent_count += 1
                 else:
-                    # 최신순 정렬이므로 30일 이전 글이 나오면 즉시 종료
                     break
+            
+            # 100건 모두 최근 30일 이내에 작성된 대형 키워드인 경우
+            if recent_count == 100 and oldest_item_date >= cutoff_date:
+                # 첫 글과 100번째 글의 일수 차이를 이용한 월 환산
+                try:
+                    d_new = datetime.strptime(items[0]['postdate'], '%Y%m%d')
+                    d_old = datetime.strptime(items[-1]['postdate'], '%Y%m%d')
+                    days_diff = max((d_new - d_old).days, 1)
+                    estimated_monthly = int((100 / days_diff) * 30)
+                    return min(estimated_monthly, total_docs)
+                except:
+                    return 100
             
             return recent_count
         return 0
@@ -115,7 +129,6 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
         progress_bar = st.progress(0)
         
         try:
-            # 1) 검색광고 연관키워드 및 검색량 조회
             base_url = "https://api.naver.com"
             uri = "/keywordstool"
             timestamp = str(round(time.time() * 1000))
@@ -133,7 +146,6 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
             result_list = []
             total_items = len(keywords_data)
 
-            # 2) 공식 검색 API로 최근 1개월 발행량 집계
             for idx, item in enumerate(keywords_data):
                 kw = item['relKeyword']
                 progress_text.text(f"분석 중 ({idx+1}/{total_items}): {kw}")
