@@ -14,10 +14,6 @@ st.set_page_config(page_title="나만의 키워드 채굴기", page_icon="⛏️
 st.markdown("""
 <style>
     .stApp { background-color: #0e1117; color: #ffffff; }
-    .grade-s { background-color: #059669; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-    .grade-a { background-color: #2563eb; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-    .grade-b { background-color: #d97706; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
-    .grade-f { background-color: #dc2626; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -27,56 +23,69 @@ def generate_signature(timestamp, method, uri, secret_key):
     signature = hmac.new(secret_key.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).digest()
     return base64.b64encode(signature).decode('utf-8')
 
-# --- 3. 최근 1개월 블로그 발행량 조회 ---
+# --- 3. 최근 1개월 블로그 발행량 조회 (개발자센터 & 네이버클라우드 겸용) ---
 def get_recent_monthly_blog_count(keyword, client_id, client_secret):
-    try:
-        encoded_kw = urllib.parse.quote(keyword)
-        url = f"https://openapi.naver.com/v1/search/blog.json?query={encoded_kw}&display=100&sort=date"
-        headers = {
-            "X-Naver-Client-Id": client_id.strip(),
-            "X-Naver-Client-Secret": client_secret.strip()
-        }
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            items = data.get('items', [])
-            total_docs = data.get('total', 0)
-            
-            if not items:
-                return 0
-            
-            # 기준일: 최근 30일 계산
-            cutoff_date = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
-            
-            recent_count = 0
-            oldest_item_date = items[-1].get('postdate', '')
-            
-            for item in items:
-                pdate = str(item.get('postdate', '')).strip()
-                if pdate >= cutoff_date:
-                    recent_count += 1
-                else:
-                    break
-            
-            # 100건 모두 최근 30일 이내에 작성된 대형 키워드인 경우
-            if recent_count == 100 and oldest_item_date >= cutoff_date:
-                # 첫 글과 100번째 글의 일수 차이를 이용한 월 환산
-                try:
-                    d_new = datetime.strptime(items[0]['postdate'], '%Y%m%d')
-                    d_old = datetime.strptime(items[-1]['postdate'], '%Y%m%d')
-                    days_diff = max((d_new - d_old).days, 1)
-                    estimated_monthly = int((100 / days_diff) * 30)
-                    return min(estimated_monthly, total_docs)
-                except:
-                    return 100
-            
-            return recent_count
-        return 0
-    except:
-        return 0
+    encoded_kw = urllib.parse.quote(keyword)
+    cid = client_id.strip()
+    csec = client_secret.strip()
+
+    # 1순위: 네이버 개발자센터 오픈API 호출
+    url_dev = f"https://openapi.naver.com/v1/search/blog.json?query={encoded_kw}&display=100&sort=date"
+    headers_dev = {
+        "X-Naver-Client-Id": cid,
+        "X-Naver-Client-Secret": csec
+    }
+    
+    # 2순위: 네이버 클라우드 플랫폼(Ncloud) API Gateway 호출
+    url_ncp = f"https://naveropenapi.apigw.ntruss.com/v1/search/blog.json?query={encoded_kw}&display=100&sort=date"
+    headers_ncp = {
+        "X-NCP-APIGW-API-KEY-ID": cid,
+        "X-NCP-APIGW-API-KEY": csec
+    }
+
+    res = requests.get(url_dev, headers=headers_dev, timeout=5)
+    if res.status_code != 200:
+        # 개발자센터 인증 실패 시 Ncloud 엔드포인트로 재시도
+        res = requests.get(url_ncp, headers=headers_ncp, timeout=5)
+
+    if res.status_code != 200:
+        return -1, f"API 에러 ({res.status_code}): {res.text}"
+
+    data = res.json()
+    items = data.get('items', [])
+    total_docs = data.get('total', 0)
+    
+    if not items:
+        return 0, None
+
+    # 최근 30일 기준일 계산 (한국 시간 기준)
+    now_kst = datetime.utcnow() + timedelta(hours=9)
+    cutoff_date = (now_kst - timedelta(days=30)).strftime('%Y%m%d')
+    
+    recent_count = 0
+    for item in items:
+        pdate = str(item.get('postdate', '')).strip()
+        # postdate가 최근 30일 이내인 경우 전부 카운트 (최신순이 살짝 섞여 있어도 끝까지 검사)
+        if len(pdate) == 8 and pdate >= cutoff_date:
+            recent_count += 1
+
+    # 만약 100개 중 90개 이상이 최근 30일 내 글이라면 대형 키워드이므로 일수 비례 월간 추정치 계산
+    if recent_count >= 90:
+        try:
+            dates = [datetime.strptime(i['postdate'], '%Y%m%d') for i in items if len(str(i.get('postdate', ''))) == 8]
+            if dates:
+                days_span = max((max(dates) - min(dates)).days, 1)
+                estimated = int((len(dates) / days_span) * 30)
+                return min(estimated, total_docs), None
+        except:
+            pass
+
+    return recent_count, None
 
 # --- 4. 블릿AI 공식 등급 판정 로직 ---
 def calculate_grade(search_vol, blog_cnt):
+    if blog_cnt < 0:
+        return "?"
     if search_vol < 500:
         return "F"
     elif search_vol <= 1000:
@@ -145,6 +154,7 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
 
             result_list = []
             total_items = len(keywords_data)
+            first_error = None
 
             for idx, item in enumerate(keywords_data):
                 kw = item['relKeyword']
@@ -158,7 +168,10 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
                     progress_bar.progress((idx + 1) / total_items)
                     continue
 
-                blog_cnt = get_recent_monthly_blog_count(kw, dev_client_id, dev_client_secret)
+                blog_cnt, err_msg = get_recent_monthly_blog_count(kw, dev_client_id, dev_client_secret)
+                if err_msg and not first_error:
+                    first_error = err_msg
+
                 grade = calculate_grade(total_search, blog_cnt)
 
                 result_list.append({
@@ -172,8 +185,13 @@ if st.button("🚀 키워드 채굴 시작", use_container_width=True):
 
             progress_text.empty()
             progress_bar.empty()
+            
+            if first_error:
+                st.error(f"검색 API 호출 실패 원인: {first_error}")
+            else:
+                st.success("키워드 채굴 완료!")
+                
             st.session_state['result_df'] = pd.DataFrame(result_list)
-            st.success("키워드 채굴 완료!")
 
         except Exception as e:
             st.error(f"오류가 발생했습니다: {e}")
@@ -195,8 +213,8 @@ if 'result_df' in st.session_state and not st.session_state['result_df'].empty:
 
     grade_choice = st.multiselect(
         "필터링할 등급",
-        options=["S", "A", "B", "F"],
-        default=["S", "A", "B", "F"]
+        options=["S", "A", "B", "F", "?"],
+        default=["S", "A", "B", "F", "?"]
     )
 
     filtered = df[df['등급'].isin(grade_choice)].sort_values(by=["등급", "월 검색량"], ascending=[True, False])
@@ -204,5 +222,3 @@ if 'result_df' in st.session_state and not st.session_state['result_df'].empty:
 
     csv = filtered.to_csv(index=False).encode('utf-8-sig')
     st.download_button("CSV 다운로드", data=csv, file_name=f"{query}_채굴결과.csv")
-elif 'result_df' in st.session_state and st.session_state['result_df'].empty:
-    st.info("조건에 일치하는 키워드가 없습니다.")
